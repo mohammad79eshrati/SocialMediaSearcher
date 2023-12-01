@@ -3,6 +3,11 @@ version: '3'
 networks:
   laravel:
 
+
+volumes:
+  laravelelastic:
+    driver: local
+
 services:
   nginx:
     build:
@@ -21,12 +26,11 @@ services:
       - .env:/var/www/html/.env
     depends_on:
       - php
-      - redis
       - mysql
       - laravel-queue
-      - laravel-cron
       - phpmyadmin
-      - mailhog
+      - elastic
+      - kibana
     networks:
       - laravel
 
@@ -48,12 +52,12 @@ services:
       - laravel
 
   mysql:
-    image: mariadb:10.6
+    image: mysql
     container_name: mysql
     restart: unless-stopped
     tty: true
     ports:
-      - 3307:3306
+      - 3306:3306
     environment:
       MYSQL_DATABASE: ${DB_DATABASE}
       MYSQL_USER: ${DB_USERNAME}
@@ -65,34 +69,7 @@ services:
       - ./docker/mysql:/var/lib/mysql
     networks:
       - laravel
-    
-  redis:
-    image: redis:alpine
-    container_name: redis
-    restart: unless-stopped
-    ports:
-      - 6380:6379
-    networks:
-      - laravel
 
-  laravel-cron:
-    build:
-      context: ./docker
-      dockerfile: php.dockerfile
-      args:
-        - UID=${UID:-1000}
-        - GID=${GID:-1000}
-        - USER=${USER:-laravel}
-    container_name: laravel-cron
-    volumes:
-      - ./src:/var/www/html
-      - .env:/var/www/html/.env
-    depends_on:
-      - mysql
-    working_dir: /var/www/html
-    entrypoint: ['php', '/var/www/html/artisan', 'schedule:work']
-    networks:
-      - laravel
 
   laravel-queue:
     build:
@@ -109,18 +86,7 @@ services:
     depends_on:
       - mysql
     working_dir: /var/www/html
-    entrypoint: ['php', '/var/www/html/artisan', 'queue:work']
-    networks:
-      - laravel
-
-  mailhog:
-    image: mailhog/mailhog:latest
-    container_name: mailhog
-    logging: 
-      driver: 'none'
-    ports:
-      - 1025:1025
-      - 8025:8025
+    entrypoint: [ 'php', '/var/www/html/artisan', 'queue:work' ]
     networks:
       - laravel
 
@@ -129,7 +95,7 @@ services:
     container_name: phpmyadmin
     environment:
       PMA_ARBITRARY: 1
-      PMA_HOST: ${DB_HOST}
+      PMA_HOST: mysql
       PMA_USER: ${DB_USERNAME}
       PMA_PASSWORD: ${DB_PASSWORD}
       PMA_PORT: ${DB_PORT}
@@ -154,13 +120,13 @@ services:
       - .env:/var/www/html/.env
     depends_on:
       - mysql
-    profiles: ["migrate-seed"]
+    profiles: [ "migrate-seed" ]
     working_dir: /var/www/html
-    entrypoint: ["/bin/sh","-c"]
+    entrypoint: [ "/bin/sh", "-c" ]
     command:
-    - |
-      php artisan migrate
-      php artisan db:seed
+      - |
+        php artisan migrate
+        php artisan db:seed
     networks:
       - laravel
 
@@ -180,8 +146,8 @@ services:
     depends_on:
       - php
     user: ${USER:-laravel} #system user
-    profiles: ["composer"]
-    entrypoint: ['composer', '--ignore-platform-reqs']
+    profiles: [ "composer" ]
+    entrypoint: [ 'composer', '--ignore-platform-reqs' ]
     networks:
       - laravel
 
@@ -200,8 +166,8 @@ services:
     depends_on:
       - mysql
     working_dir: /var/www/html
-    profiles: ["artisan"]
-    entrypoint: ['php', '/var/www/html/artisan']
+    profiles: [ "artisan" ]
+    entrypoint: [ 'php', '/var/www/html/artisan' ]
     networks:
       - laravel
 
@@ -215,8 +181,45 @@ services:
       - 3000:3000
       - 3001:3001
     working_dir: /var/www/html
-    profiles: ["npm"]
-    entrypoint: ['npm']
+    profiles: [ "npm" ]
+    entrypoint: [ 'npm' ]
     networks:
       - laravel
 
+  elastic:
+    image: elasticsearch:8.11.1
+    container_name: elastic
+    environment:
+      - node.name=elastic
+      - cluster.name=elastic-docker-cluster
+      - discovery.type=single-node
+      - bootstrap.memory_lock=true
+      - xpack.security.enabled=false
+      - ELASTIC_PASSWORD=pAEBY4yWk4voVcL6JxjB
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    volumes:
+      - laravelelastic:/usr/share/elasticsearch/data
+    ports:
+      - "${FORWARD_ELASTIC_PORT:-9200}:9200"
+    networks:
+      - laravel
+    restart: unless-stopped
+  kibana:
+    image: kibana:8.11.1
+    container_name: kibana
+    ports:
+      - "${FORWARD_KIBANA_PORT:-5601}:5601"
+    environment:
+      ELASTICSEARCH_URL: "http://elastic:${FORWARD_ELASTIC_PORT:-9200}"
+      ELASTICSEARCH_HOSTS: "http://elastic:${FORWARD_ELASTIC_PORT:-9200}"
+      ELASTICSEARCH_USERNAME: root
+      ELASTICSEARCH_PASSWORD: pAEBY4yWk4voVcL6JxjB
+    networks:
+      - laravel
+    depends_on:
+      - elastic
+    restart: unless-stopped
